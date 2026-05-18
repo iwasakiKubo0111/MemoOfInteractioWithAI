@@ -1,0 +1,6 @@
+Claude やりとりメモ
+■ネットワークレプリケーション時のアクター移動がガクガクする
+https://claude.ai/share/1a30fc5a-54da-4313-a1af-c9bdacf0a582
+
+■UCrowdFollowingComponentの回避時の速度低下
+https://claude.ai/share/72ea8b72-1d07-47bd-9839-45b26c7f6b47
