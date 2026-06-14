@@ -1,0 +1,188 @@
+# TeliCamSDK 学習用カメラ選定 ＆ フレーム間隔ジッタ調査メモ
+
+> 作成日: 2026-06-15
+> 対象: TeliCamApi（高水準API）を C++ / Visual Studio (MFC) で利用するアプリ
+> 環境: 新PC = Intel Core Ultra 7 265K / 旧PC = Intel Core i9-12900KS
+
+---
+
+## 1. 学習用カメラを安く揃える
+
+### 前提
+- TeliCamSDK / TeliViewer 本体は東芝テリーのサイトから **無料ダウンロード可**。費用がかかるのはカメラ本体のみ。
+- 10万円前後は新品の現行モデル（DUシリーズ等）の価格帯。
+
+### 技術ポイント
+- TeliCamSDK は東芝テリー製の USB3 Vision / GigE Vision カメラ用だが、**GenApi にも対応**しており、他社の GenICam 準拠カメラにも GenApi 経由でアクセス可能。
+- ただし高水準 API「TeliCamApi」本来の使い勝手はテリー製カメラ前提。特に USB3 Vision は **TeliU3vDriver がテリー製専用**のため、他社製 USB3 カメラは認識されない可能性がある。
+
+### 選択肢（おすすめ順）
+1. **中古のテリー製カメラ**（最も無難）: ヤフオク / メルカリ / 中古FA機器店。旧型 BU シリーズ(USB3) など。仕事と同じ TeliCamApi がそのまま動く保証あり。
+2. **安価な他社製カメラ**（予算最優先・リスクあり）: Hikrobot 等の GenICam 準拠機。USB3 Vision より **GigE Vision の方が無難**（専用ドライバの縛りが緩く GenApi 経由で認識しやすい）。購入前にテリーの接続確認リスト確認 or TeliViewer で認識テスト推奨。
+3. **カメラなしで先に学ぶ**: 付属のサンプルコード／マニュアルでAPI構造・関数の流れは理解可能。実画像の Grab 段階で初めてカメラが必要。
+
+> 補足: 使いたいのが USB3.0 機なら、いずれにせよある程度の出費は避けにくい。
+
+---
+
+## 2. 症状と切り分け（フレーム間隔のジッタ）
+
+### 症状
+- カメラ 60fps / 露光 16ms、バッファ 16、`Strm_SetCallbackImageAcquired` でコールバックをバインド。
+- 期待通り約 16ms 間隔でコールバックが発火するが、**Core Ultra 7 265K 機ではたまに約 60ms の谷**が出る。
+- 旧 i9-12900KS 機では問題なし。
+- OpenMP 有効で実行中は CPU ほぼ 100%。
+
+### 結論
+**性能不足ではなく、リアルタイム性（スレッドのスケジューリング競合＝スレッド飢餓）の問題**である可能性が高い。
+「たまに 60ms 空く（ジッタ）」＋「OpenMP で CPU 100%」は飢餓の典型サイン。
+
+### なぜ新PCだけ起きるか（CPU構成の差）
+| CPU | 構成 | HT/SMT | 論理スレッド |
+|-----|------|--------|--------------|
+| i9-12900KS (Alder Lake) | 8P + 8E | あり | 24 |
+| Core Ultra 7 265K (Arrow Lake) | 8P + 12E | **なし** | 20 |
+
+- OpenMP が全論理コアを使い切ると、TeliCamApi の内部ストリーミングスレッド（コールバック発火元）や取得ループスレッドが動く空きコアを奪い合う。
+- 12900KS は HT があるため、遅延に敏感なスレッドを P コアの隙間に滑り込ませやすい。
+- 265K は SMT がないため、20 物理コアが OpenMP で埋まると、カメラスレッドはフルのコンテキストスイッチ待ち。Thread Director が遅い E コア(Skymont)側へ置くこともあり、これが 60ms（≒3〜4フレーム）の谷の正体と考えられる。
+- 加えて新プラットフォーム(LGA1851 / 800系)の USB コントローラ・電源管理(Cステート/コアパーキング/APO)も DPC レイテンシ増の併発要因になり得る。
+
+### 低レベル関数に変えるべきか
+**まずは No。** 競合（CPUに空きがない）が原因なら低レベル化してもジッタは残る。先にやるべきはスレッド設計の見直し。低レベル化は「どのスレッドで何をするか」の制御を細かくしたい場合の選択肢。
+
+---
+
+## 3. フリーラン vs ソフトトリガの見分け方
+
+while ループで「16ms毎に依頼命令」を出しているなら **ソフトトリガ方式**の可能性が高い。ループ本体を以下で検索して確定する。
+
+- `ExecuteSoftwareTrigger` / `TriggerSoftware` / `SetTriggerMode` / `TriggerMode` → ソフトトリガ
+- `Strm_ReadCurrentImage` だけがループ内 → ポーリング（フリーラン＋引き抜き）
+- `Sleep(16)` 相当のウェイトの有無
+
+**ソフトトリガ＋Sleep(16)ループ**の場合、100%負荷下では Sleep の精度が出ず、ループの起床ジッタがそのままフレーム間隔のジッタになる（60msの谷の主因になり得る）。
+
+→ 対策: 初期化で `TriggerMode = Off` ＋ `AcquisitionFrameRate = 60` にして **フリーラン（連続取得）** へ切り替え、ループからのトリガ発行をやめる。タイミングがカメラ側に移り、CPU負荷から切り離せる。コールバックはそのまま使える。
+
+---
+
+## 4. ドロップか「遅延配送」かの判別コード
+
+東芝テリー FAQ より:
+- 高水準ストリーミングでは BlockID = `Strm_ReadCurrentImage()` の引数 `CAM_IMAGE_INFO` 構造体の **`ullBlockId`** メンバ。
+- 現在フレームの BlockID が直前 + 1 でなければフレーム喪失。
+
+`Strm_ReadCurrentImage` の第4引数（今 NULL なら構造体を渡す）から `ullBlockId` を読む。ホスト到着間隔(QueryPerformanceCounter)と併用して切り分ける。
+
+```cpp
+// ファイルスコープ or クラスメンバ
+static uint64_t      g_ullPrevBlock = 0;
+static bool          g_bFirst       = true;
+static LARGE_INTEGER g_liPrev       = {0};
+static LARGE_INTEGER g_liFreq       = {0};  // 初期化時に QueryPerformanceFrequency(&g_liFreq);
+
+// コールバック関数内（画像取得時）
+Teli::CAM_IMAGE_INFO sInfo;
+uint32_t uiSize = (uint32_t)bufSize;
+Teli::Strm_ReadCurrentImage(hCam, pBuf, &uiSize, &sInfo);   // ← 第4引数に &sInfo
+
+// (A) 真のドロップ判定：BlockID の連番チェック（転送段での欠落）
+if (!g_bFirst && sInfo.ullBlockId != g_ullPrevBlock + 1) {
+    uint64_t lost = sInfo.ullBlockId - g_ullPrevBlock - 1;
+    TRACE(_T("FRAME LOST: prev=%llu cur=%llu lost=%llu\n"),
+          g_ullPrevBlock, sInfo.ullBlockId, lost);
+}
+g_ullPrevBlock = sInfo.ullBlockId;
+
+// (B) 配送ジッタ判定：コールバックの到着間隔（ホスト側の遅れ）
+LARGE_INTEGER liNow; QueryPerformanceCounter(&liNow);
+if (!g_bFirst) {
+    double ms = (liNow.QuadPart - g_liPrev.QuadPart) * 1000.0 / g_liFreq.QuadPart;
+    if (ms > 25.0) TRACE(_T("LATE callback: %.1f ms\n"), ms);
+}
+g_liPrev = liNow;
+g_bFirst = false;
+```
+
+読み方:
+- **BlockID が飛ぶ** → 本当に欠落（転送段でロスト）= ケースA
+- **BlockID は連番なのに (B) で大きな間隔や束** → スケジューリング起因の配送遅延、欠落なし = ケースB（本症状はおそらくこちら）
+
+注意: **コールバック実行中はリングバッファ領域がロックされる**。検証ログ以外の重い処理をコールバック内でやらないのが鉄則。
+
+---
+
+## 5. ケース別の対応方針
+
+### ケースA：BlockID が飛ぶ（本当に欠落＝転送段でロスト）
+対応必須。原因は主に2つ。
+
+**(1) パイプラインが追いつかずリングバッファ溢れ**
+- 重い処理をコールバックから追い出す（積むだけ → 別スレッドで処理）【最優先】
+- OpenMP のコア確保で消費側スレッドに CPU を回す（溢れ防止）
+- バッファ枚数を増やしてバーストを吸収（緩衝材であり根本策ではない）
+
+**(2) USB3 の転送・帯域・ドライバ起因**
+- 専用 USB3 ホストコントローラに直結（ハブ・分岐回避）
+- 電源プラン「高パフォーマンス」＋ USB セレクティブサスペンド無効
+- チップセット / USB ドライバ更新
+- 帯域が厳しければ解像度・フレームレート見直し
+
+→ 方向性: **速く吐き出させる ＋ 帯域を確保する**
+
+### ケースB：BlockID 連番だが束で遅れて来る（スケジューリング起因、欠落なし）
+データは全部揃って順番も正しく、届くタイミングだけブレている状態。
+- **用途次第で対応不要**: 録画・後処理のように全フレームが順番に取れればよいなら実害なし。
+- 表示の滑らかさ／タイミング制御が要る場合のみ、タイミング安定化:
+  - OpenMP に全コアを使わせず、カメラ/I-O 用にコア確保【最優先】
+  - ストリーミングスレッドの優先度を上げる、アフィニティで専用 P コアに固定
+  - ソフトトリガ Sleep ループならフリーラン化（`AcquisitionFrameRate`）
+  - どうしても CPU で刻むなら `timeBeginPeriod(1)`
+
+→ 方向性: **カメラスレッドに CPU 時間を優先的に与える**
+
+**共通**: どちらも「処理をコールバックから分離して CPU に余裕を作る」が効く。まずはそこから。
+
+---
+
+## 6. OpenMP のスレッド数制限（MFC C++）
+
+`#include <omp.h>` を追加（OpenMP は有効＝ C/C++ → 言語 → OpenMPサポート「はい(/openmp)」）。
+`CWinApp::InitInstance()` 内など、重い並列処理の前に一度だけ設定。
+
+```cpp
+#include <omp.h>
+
+// CYourApp::InitInstance() 内
+int nProcs = omp_get_num_procs();                  // 265K なら 20
+int nUse   = (nProcs - 2 > 1) ? (nProcs - 2) : 1;  // 2コアをカメラ/OS用に確保 → 18
+omp_set_dynamic(0);                                // ランタイムによるスレッド数変更を抑止
+omp_set_num_threads(nUse);
+```
+
+> 三項演算子にしているのは MFC/Windows の `max` マクロ衝突回避のため。
+
+**再コンパイルなしで試す**（効果確認）: 環境変数で
+```
+set OMP_NUM_THREADS=18
+```
+を設定してから起動。これで谷が消えれば「OpenMP がコアを食い尽くしてカメラスレッドが飢えていた」でほぼ確定。
+
+**特定ループだけ絞る場合**:
+```cpp
+#pragma omp parallel for num_threads(nUse)
+for (int i = 0; i < n; ++i) { /* ... */ }
+```
+
+補足: MFC の UI メインスレッド上で取得ループや重い処理を回していないか確認。理想は「コールバックはキューに積んで即 return → 別のコンシューマスレッドで OpenMP 処理」の分離。
+
+---
+
+## 7. 進め方（推奨順）
+
+1. `set OMP_NUM_THREADS=18` を環境変数で設定して実行 → 改善するか確認（最速の切り分け）。
+2. セクション4のログで、谷の前後の **BlockID が連番か**確認。
+   - 連番 → ケースB（欠落なし。タイミングのみ）→ 必要に応じて優先度/アフィニティ/フリーラン化。
+   - 飛ぶ → ケースA（実欠落）→ コールバック分離＋バッファ＋USB帯域。
+3. 恒久対策として、コールバックは積むだけ＋別スレッド処理（producer/consumer）へ。
