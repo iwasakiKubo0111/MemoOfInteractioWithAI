@@ -19,3 +19,9 @@ https://claude.ai/share/dcc1d76e-2ab2-43a4-83f9-3ec170776370
 
 ■UE5.3のNPC移動時のモデル震え対策
 https://claude.ai/share/b073dc7c-e94a-48f6-a11c-b66884b47be9
+
+その２
+https://claude.ai/share/5a4546d0-1327-448c-b916-ed5403267687
+
+■リプレイ再生時のカメラ位置同期がガクガクする問題
+https://claude.ai/share/a1c483c6-66c8-40f3-9467-8fe9a663ec8f
