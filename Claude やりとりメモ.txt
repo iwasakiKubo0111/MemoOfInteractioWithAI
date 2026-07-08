@@ -28,3 +28,6 @@ https://claude.ai/share/a1c483c6-66c8-40f3-9467-8fe9a663ec8f
 
 ■UE5.3でのキャラクターネットワークスムージング切り替え
 https://claude.ai/share/f1f7a353-ede0-47d3-85e9-958a091ccb88
+
+■複数クライアント間のアニメーション同期ずれの解決
+https://claude.ai/share/70dd7340-7307-472f-8702-34a0c6a3b3da
