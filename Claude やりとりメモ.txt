@@ -34,3 +34,6 @@ https://claude.ai/share/70dd7340-7307-472f-8702-34a0c6a3b3da
 
 ■未初期化メンバ変数がtrueになる問題
 https://claude.ai/share/23c028b2-4914-4cfd-895f-6e0d0f25ec00
+
+■垂直方向になるはずのスプラインがS字になる
+https://claude.ai/share/8b2f2c4b-f2ac-4a45-afb7-cd8b337e2b66
