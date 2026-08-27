@@ -37,3 +37,6 @@ https://claude.ai/share/23c028b2-4914-4cfd-895f-6e0d0f25ec00
 
 ■垂直方向になるはずのスプラインがS字になる
 https://claude.ai/share/8b2f2c4b-f2ac-4a45-afb7-cd8b337e2b66
+
+■UE5の飛行機AIコントローラーで回転同期を無効にする方法
+https://claude.ai/share/3931fb7b-f930-4af2-93cc-6c261790e2f5
